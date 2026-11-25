@@ -828,6 +828,65 @@ mod tests {
         assert_eq!(dmg_buf, full_buf);
     }
 
+    /// Simulates a double-buffered swapchain such as Wayland `wl_shm` where
+    /// every swap hands back the buffer from two frames ago (`age == 2`).
+    /// After switching from Tab A to Tab B, the next frame receives the buffer
+    /// still holding Tab A; passing `force_full = true` (as required when
+    /// `buffer.age() != 1`) must repaint every tile so no Tab A pixels survive.
+    #[test]
+    fn double_buffered_tab_switch_leaves_no_stale_tiles_when_age_forces_full() {
+        let mut painter = setup_painter();
+        let mut ref_painter = setup_painter();
+        let ctx = shape_ctx();
+
+        let tab_a = vec![
+            rect_shape(0.0, 0.0, 256.0, 192.0, Color32::from_rgb(30, 30, 30), 0),
+            rect_shape(8.0, 8.0, 240.0, 180.0, Color32::from_rgb(200, 40, 40), 0),
+        ];
+        let tab_b_1 = vec![
+            rect_shape(0.0, 0.0, 256.0, 192.0, Color32::from_rgb(30, 30, 30), 0),
+            rect_shape(16.0, 16.0, 120.0, 48.0, Color32::from_rgb(40, 120, 220), 0),
+        ];
+        let tab_b_2 = vec![
+            rect_shape(0.0, 0.0, 256.0, 192.0, Color32::from_rgb(30, 30, 30), 0),
+            rect_shape(16.0, 16.0, 120.0, 48.0, Color32::from_rgb(40, 160, 240), 0),
+        ];
+
+        let mut buf_a = vec![0u32; (W * H) as usize];
+        let mut buf_b = vec![0u32; (W * H) as usize];
+
+        // Frame 1 (buf_a, age 0): Tab A
+        {
+            let mut t = Target::new(&mut buf_a, W, H).unwrap();
+            let s = painter.paint_shapes_damaged(&mut t, &ctx, tab_a, BG, true);
+            assert_eq!(s.dirty_tiles, s.total_tiles);
+        }
+        // Frame 2 (buf_b, age 0): Tab B
+        {
+            let mut t = Target::new(&mut buf_b, W, H).unwrap();
+            let s = painter.paint_shapes_damaged(&mut t, &ctx, tab_b_1, BG, true);
+            assert_eq!(s.dirty_tiles, s.total_tiles);
+        }
+        // Frame 3 (buf_a swapped back with age 2, still holding Tab A): Tab B updated
+        {
+            let mut t = Target::new(&mut buf_a, W, H).unwrap();
+            let s = painter.paint_shapes_damaged(&mut t, &ctx, tab_b_2.clone(), BG, true);
+            assert_eq!(s.dirty_tiles, s.total_tiles);
+            assert_eq!(s.dirty_rects, vec![t.bounds()]);
+        }
+
+        let mut expected = vec![0u32; (W * H) as usize];
+        {
+            let mut t = Target::new(&mut expected, W, H).unwrap();
+            Painter::clear(&mut t, BG);
+            ref_painter.paint_shapes(&mut t, &ctx, tab_b_2);
+        }
+        assert_eq!(
+            buf_a, expected,
+            "double-buffered swap must not retain tiles from two frames ago"
+        );
+    }
+
     #[test]
     fn merge_dirty_tiles_produces_disjoint_rects_covering_exact_tiles() {
         // 4x3 grid of tiles (256x192)

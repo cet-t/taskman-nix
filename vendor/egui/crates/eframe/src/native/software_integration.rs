@@ -378,6 +378,7 @@ mod platform_surface {
     /// other platform's `FrameBuffer` owns its buffer instead, so this is the
     /// same shape to the shared paint path.
     pub(super) struct FrameBuffer<'a> {
+        hwnd: HWND,
         buffer: &'a mut Win32Buffer,
     }
 
@@ -388,6 +389,88 @@ mod platform_surface {
 
         pub(super) fn pixels_mut(&mut self) -> &mut [u32] {
             self.buffer.pixels_mut()
+        }
+
+        /// Blit `rects` from the DIB buffer to the window DC, checking `BitBlt`'s return value
+        /// and validating only regions that actually succeeded.
+        pub(super) fn present_rects(
+            self,
+            rects: &[egui_software::PixelRect],
+            validate_full: bool,
+        ) -> Result<(), String> {
+            // Acquire a fresh DC per present rather than holding a common DC across frames or
+            // display-mode changes.
+            // SAFETY: `self.hwnd` is valid on this thread.
+            let window_dc = unsafe { Gdi::GetDC(self.hwnd) };
+            if window_dc.is_null() {
+                self.buffer.presented = false;
+                return Err(format!(
+                    "GetDC returned null during present: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+
+            let max_w = i32::try_from(self.buffer.width).unwrap_or(i32::MAX);
+            let max_h = i32::try_from(self.buffer.height).unwrap_or(i32::MAX);
+            for rect in rects.iter().copied() {
+                let min_x = rect.min_x.clamp(0, max_w);
+                let min_y = rect.min_y.clamp(0, max_h);
+                let max_x = rect.max_x.clamp(0, max_w);
+                let max_y = rect.max_y.clamp(0, max_h);
+                let width = max_x - min_x;
+                let height = max_y - min_y;
+                if width <= 0 || height <= 0 {
+                    continue;
+                }
+                // SAFETY: `window_dc` and `self.buffer.dc` are valid DCs and the rectangle is
+                // clamped to the allocated DIB dimensions.
+                let ok = unsafe {
+                    Gdi::BitBlt(
+                        window_dc,
+                        min_x,
+                        min_y,
+                        width,
+                        height,
+                        self.buffer.dc,
+                        min_x,
+                        min_y,
+                        Gdi::SRCCOPY,
+                    )
+                };
+                if ok == 0 {
+                    let err = std::io::Error::last_os_error();
+                    // SAFETY: Always release the common window DC before returning.
+                    unsafe {
+                        Gdi::ReleaseDC(self.hwnd, window_dc);
+                    }
+                    self.buffer.presented = false;
+                    return Err(format!(
+                        "BitBlt({min_x},{min_y} {width}x{height}) failed: {err}"
+                    ));
+                }
+                if !validate_full {
+                    let valid = RECT {
+                        left: min_x,
+                        top: min_y,
+                        right: max_x,
+                        bottom: max_y,
+                    };
+                    // SAFETY: Validates only the rectangle whose pixels were just blitted.
+                    unsafe {
+                        Gdi::ValidateRect(self.hwnd, &valid);
+                    }
+                }
+            }
+
+            // SAFETY: Release the common window DC.
+            unsafe {
+                Gdi::ReleaseDC(self.hwnd, window_dc);
+                if validate_full {
+                    Gdi::ValidateRect(self.hwnd, ptr::null());
+                }
+            }
+            self.buffer.presented = true;
+            Ok(())
         }
     }
 
@@ -457,7 +540,10 @@ mod platform_surface {
                 .buffer
                 .as_mut()
                 .ok_or_else(|| "surface buffer not allocated".to_owned())?;
-            Ok(FrameBuffer { buffer })
+            Ok(FrameBuffer {
+                hwnd: self.hwnd,
+                buffer,
+            })
         }
 
         /// Query the OS update region (`GetUpdateRect`) before `DefWindowProcW` validates it.
@@ -481,91 +567,6 @@ mod platform_surface {
                 None
             }
         }
-
-        /// Blit `rects` from the DIB buffer to the window DC, checking `BitBlt`'s return value
-        /// and validating only regions that actually succeeded.
-        pub(super) fn present_rects(
-            &mut self,
-            rects: &[egui_software::PixelRect],
-            validate_full: bool,
-        ) -> Result<(), String> {
-            let Some(buffer) = self.buffer.as_mut() else {
-                return Err("surface buffer not allocated".to_owned());
-            };
-            // Acquire a fresh DC per present rather than holding a common DC across frames or
-            // display-mode changes.
-            // SAFETY: `self.hwnd` is valid on this thread.
-            let window_dc = unsafe { Gdi::GetDC(self.hwnd) };
-            if window_dc.is_null() {
-                buffer.presented = false;
-                return Err(format!(
-                    "GetDC returned null during present: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
-
-            let max_w = i32::try_from(buffer.width).unwrap_or(i32::MAX);
-            let max_h = i32::try_from(buffer.height).unwrap_or(i32::MAX);
-            for rect in rects.iter().copied() {
-                let min_x = rect.min_x.clamp(0, max_w);
-                let min_y = rect.min_y.clamp(0, max_h);
-                let max_x = rect.max_x.clamp(0, max_w);
-                let max_y = rect.max_y.clamp(0, max_h);
-                let width = max_x - min_x;
-                let height = max_y - min_y;
-                if width <= 0 || height <= 0 {
-                    continue;
-                }
-                // SAFETY: `window_dc` and `buffer.dc` are valid DCs and the rectangle is clamped
-                // to the allocated DIB dimensions.
-                let ok = unsafe {
-                    Gdi::BitBlt(
-                        window_dc,
-                        min_x,
-                        min_y,
-                        width,
-                        height,
-                        buffer.dc,
-                        min_x,
-                        min_y,
-                        Gdi::SRCCOPY,
-                    )
-                };
-                if ok == 0 {
-                    let err = std::io::Error::last_os_error();
-                    // SAFETY: Always release the common window DC before returning.
-                    unsafe {
-                        Gdi::ReleaseDC(self.hwnd, window_dc);
-                    }
-                    buffer.presented = false;
-                    return Err(format!(
-                        "BitBlt({min_x},{min_y} {width}x{height}) failed: {err}"
-                    ));
-                }
-                if !validate_full {
-                    let valid = RECT {
-                        left: min_x,
-                        top: min_y,
-                        right: max_x,
-                        bottom: max_y,
-                    };
-                    // SAFETY: Validates only the rectangle whose pixels were just blitted.
-                    unsafe {
-                        Gdi::ValidateRect(self.hwnd, &valid);
-                    }
-                }
-            }
-
-            // SAFETY: Release the common window DC.
-            unsafe {
-                Gdi::ReleaseDC(self.hwnd, window_dc);
-                if validate_full {
-                    Gdi::ValidateRect(self.hwnd, ptr::null());
-                }
-            }
-            buffer.presented = true;
-            Ok(())
-        }
     }
 }
 
@@ -576,25 +577,57 @@ mod platform_surface {
 
     /// One frame's pixels, in the shape the shared paint path asks for.
     ///
-    /// `softbuffer` hands out a `Buffer` that derefs to the pixel slice but
-    /// knows nothing about the lifetime of its contents, which the shared path
-    /// needs for `age()`: every softbuffer backend reuses the same segment (X11
-    /// and Wayland both keep one back buffer), so the pixels survive a frame
-    /// once one has been presented into them.
+    /// Wraps `softbuffer::Buffer` directly so the shared paint path sees the
+    /// backend's real `age()` and presents the exact buffer that was painted:
+    /// X11 keeps a single segment (`age == 1` after the first present, enabling
+    /// incremental tile updates), whereas Wayland double-buffers `wl_shm`
+    /// (`age == 0` on fresh buffers and `age == 2` on every subsequent frame),
+    /// which requires a full repaint so tiles from two frames ago cannot bleed
+    /// through after tab switches or layout changes.
     pub(super) struct FrameBuffer<'a> {
         buffer: softbuffer::Buffer<'a, Arc<Window>, Arc<Window>>,
-        age: u8,
     }
 
     impl FrameBuffer<'_> {
-        /// `1` when this buffer already holds presented pixels, `0` for a
-        /// first frame that must be painted in full.
+        /// Real buffer age reported by `softbuffer`: `1` when this buffer holds
+        /// the immediately preceding frame, `2` for a double-buffered swap
+        /// (e.g. Wayland `wl_shm`), and `0` for a fresh/resized buffer.
         pub(super) fn age(&self) -> u8 {
-            self.age
+            self.buffer.age()
         }
 
         pub(super) fn pixels_mut(&mut self) -> &mut [u32] {
             &mut self.buffer
+        }
+
+        pub(super) fn present_rects(
+            self,
+            rects: &[egui_software::PixelRect],
+            validate_full: bool,
+        ) -> Result<(), String> {
+            let presented = if validate_full {
+                self.buffer.present()
+            } else {
+                let sb_rects: Vec<softbuffer::Rect> = rects
+                    .iter()
+                    .filter_map(|r| {
+                        let w = NonZeroU32::new(u32::try_from(r.width()).ok()?)?;
+                        let h = NonZeroU32::new(u32::try_from(r.height()).ok()?)?;
+                        Some(softbuffer::Rect {
+                            x: u32::try_from(r.min_x).ok()?,
+                            y: u32::try_from(r.min_y).ok()?,
+                            width: w,
+                            height: h,
+                        })
+                    })
+                    .collect();
+                if sb_rects.is_empty() {
+                    self.buffer.present()
+                } else {
+                    self.buffer.present_with_damage(&sb_rects)
+                }
+            };
+            presented.map_err(|err| format!("softbuffer present: {err}"))
         }
     }
 
@@ -604,8 +637,6 @@ mod platform_surface {
         surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
         _context: softbuffer::Context<Arc<Window>>,
         pub(super) size: (u32, u32),
-        /// A frame reached the window, so the reused buffer holds real pixels.
-        presented: bool,
     }
 
     impl SurfaceState {
@@ -621,7 +652,6 @@ mod platform_surface {
                 surface,
                 _context: context,
                 size: (0, 0),
-                presented: false,
             })
         }
 
@@ -641,12 +671,11 @@ mod platform_surface {
         }
 
         pub(super) fn buffer_mut(&mut self) -> Result<FrameBuffer<'_>, String> {
-            let age = u8::from(self.presented);
             let buffer = self
                 .surface
                 .buffer_mut()
                 .map_err(|err| format!("softbuffer buffer: {err}"))?;
-            Ok(FrameBuffer { buffer, age })
+            Ok(FrameBuffer { buffer })
         }
 
         #[expect(clippy::unused_self)]
@@ -655,42 +684,6 @@ mod platform_surface {
             // themselves (`present_with_damage`), so there is no OS-side
             // update region to merge in.
             None
-        }
-
-        pub(super) fn present_rects(
-            &mut self,
-            rects: &[egui_software::PixelRect],
-            validate_full: bool,
-        ) -> Result<(), String> {
-            let buffer = self
-                .surface
-                .buffer_mut()
-                .map_err(|err| format!("softbuffer buffer: {err}"))?;
-            let presented = if validate_full {
-                buffer.present()
-            } else {
-                let sb_rects: Vec<softbuffer::Rect> = rects
-                    .iter()
-                    .filter_map(|r| {
-                        let w = NonZeroU32::new(u32::try_from(r.width()).ok()?)?;
-                        let h = NonZeroU32::new(u32::try_from(r.height()).ok()?)?;
-                        Some(softbuffer::Rect {
-                            x: u32::try_from(r.min_x).ok()?,
-                            y: u32::try_from(r.min_y).ok()?,
-                            width: w,
-                            height: h,
-                        })
-                    })
-                    .collect();
-                if sb_rects.is_empty() {
-                    buffer.present()
-                } else {
-                    buffer.present_with_damage(&sb_rects)
-                }
-            };
-            presented.map_err(|err| format!("softbuffer present: {err}"))?;
-            self.presented = true;
-            Ok(())
         }
     }
 }
@@ -1142,7 +1135,7 @@ impl SoftwareWinitRunning<'_> {
                         .egui_ctx
                         .request_repaint_after(std::time::Duration::from_millis(50));
                 } else {
-                    let paint_outcome = match state.buffer_mut() {
+                    match state.buffer_mut() {
                         Ok(mut buffer) => {
                             let force_full = should_force_full_paint(
                                 self.has_presented_once,
@@ -1182,7 +1175,53 @@ impl SoftwareWinitRunning<'_> {
                             SOFTWARE_FRAME_STATS
                                 .total_tiles
                                 .fetch_add(damage.total_tiles as u64, Ordering::Relaxed);
-                            Some((damage, force_full))
+
+                            self.has_presented_once = true;
+                            if !self.logged_first_frame {
+                                self.logged_first_frame = true;
+                                log::info!(
+                                    "software renderer: first frame {}x{} px, sub-pixel text {:?}",
+                                    size.width,
+                                    size.height,
+                                    subpixel
+                                );
+                            }
+
+                            let (present_rects, full_screen) = rects_to_present(
+                                &damage.dirty_rects,
+                                os_dirty,
+                                size.width,
+                                size.height,
+                            );
+                            if present_rects.is_empty() {
+                                SOFTWARE_FRAME_STATS
+                                    .skipped_damage
+                                    .fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                let present_start = Instant::now();
+                                match buffer.present_rects(&present_rects, full_screen) {
+                                    Ok(()) => {
+                                        let present_ns = present_start.elapsed().as_nanos() as u64;
+                                        SOFTWARE_FRAME_STATS
+                                            .present_ns_sum
+                                            .fetch_add(present_ns, Ordering::Relaxed);
+                                        update_max(
+                                            &SOFTWARE_FRAME_STATS.present_ns_max,
+                                            present_ns,
+                                        );
+                                        if !hidden && (full_screen || force_full) {
+                                            self.presented_while_visible = true;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        log::warn!("software renderer present failed: {err}");
+                                        self.presented_while_visible = false;
+                                        self.integration.egui_ctx.request_repaint_after(
+                                            std::time::Duration::from_millis(50),
+                                        );
+                                    }
+                                }
+                            }
                         }
                         Err(err) => {
                             log::warn!("software renderer buffer access failed: {err}");
@@ -1190,53 +1229,6 @@ impl SoftwareWinitRunning<'_> {
                             self.integration
                                 .egui_ctx
                                 .request_repaint_after(std::time::Duration::from_millis(50));
-                            None
-                        }
-                    };
-
-                    if let Some((damage, force_full)) = paint_outcome {
-                        self.has_presented_once = true;
-                        if !self.logged_first_frame {
-                            self.logged_first_frame = true;
-                            log::info!(
-                                "software renderer: first frame {}x{} px, sub-pixel text {:?}",
-                                size.width,
-                                size.height,
-                                subpixel
-                            );
-                        }
-
-                        let (present_rects, full_screen) = rects_to_present(
-                            &damage.dirty_rects,
-                            os_dirty,
-                            size.width,
-                            size.height,
-                        );
-                        if present_rects.is_empty() {
-                            SOFTWARE_FRAME_STATS
-                                .skipped_damage
-                                .fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            let present_start = Instant::now();
-                            match state.present_rects(&present_rects, full_screen) {
-                                Ok(()) => {
-                                    let present_ns = present_start.elapsed().as_nanos() as u64;
-                                    SOFTWARE_FRAME_STATS
-                                        .present_ns_sum
-                                        .fetch_add(present_ns, Ordering::Relaxed);
-                                    update_max(&SOFTWARE_FRAME_STATS.present_ns_max, present_ns);
-                                    if !hidden && (full_screen || force_full) {
-                                        self.presented_while_visible = true;
-                                    }
-                                }
-                                Err(err) => {
-                                    log::warn!("software renderer present failed: {err}");
-                                    self.presented_while_visible = false;
-                                    self.integration.egui_ctx.request_repaint_after(
-                                        std::time::Duration::from_millis(50),
-                                    );
-                                }
-                            }
                         }
                     }
                 }
@@ -1269,9 +1261,10 @@ impl SoftwareWinitRunning<'_> {
                 let mut presented_now = false;
                 let mut present_failed = false;
                 if let Ok(mut state) = self.surface.try_borrow_mut()
-                    && state.buffer_mut().is_ok_and(|b| b.age() == 1)
+                    && let Ok(buffer) = state.buffer_mut()
+                    && buffer.age() == 1
                 {
-                    match state.present_rects(&[full_rect], true) {
+                    match buffer.present_rects(&[full_rect], true) {
                         Ok(()) => presented_now = true,
                         Err(err) => {
                             // Do not request an immediate redraw here: that
