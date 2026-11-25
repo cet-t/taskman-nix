@@ -14,8 +14,11 @@ path = "src/bin/taskman-privileged-helper.rs"
 tm-core = { workspace = true }
 sysinfo = { workspace = true }
 tracing = { workspace = true }
-# XDG icon-theme decoding (xdg_icons); already in the tree via tm-app.
+# XDG icon-theme decoding (xdg_icons); PNG is already in the tree via tm-app,
+# and minimal resvg (no fontdb/text/raster-image extras) decodes SVG icons
+# shipped by KDE Breeze and freedesktop scalable themes.
 png = "0.18"
+resvg = { version = "0.50", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 serde = { workspace = true }

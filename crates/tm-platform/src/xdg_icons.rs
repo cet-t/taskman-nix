@@ -10,11 +10,12 @@
 //! `$XDG_DATA_DIRS/icons` and finally the legacy pixmaps dir. An absolute
 //! `Icon=` path is used directly.
 //!
-//! Only PNG icons are decoded (the overwhelmingly common case in hicolor and
-//! shipped themes); SVG/XPM entries are skipped, so an app whose icon exists
-//! only as SVG falls back to the generic glyph. The module is platform-neutral
-//! on purpose: only the Linux backend calls it, but compiling it everywhere
-//! lets its unit tests run on the Windows dev box and CI.
+//! Both PNG and SVG icons are decoded (PNG first when both exist at the same
+//! directory level, falling back to SVG rasterized via `resvg` with a bounded
+//! input cap and no external resource loading). XPM entries are skipped. The
+//! module is platform-neutral on purpose: only the Linux backend calls it, but
+//! compiling it everywhere lets its unit tests run on the Windows dev box and
+//! CI.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -31,6 +32,9 @@ const MAX_ICON_SOURCE_EDGE: u32 = 2048;
 /// useful case; this also keeps a PNG with malicious chunk sizes from
 /// reserving the library's 64 MiB default.
 const MAX_ICON_DECODE_BYTES: usize = 32 * 1024 * 1024;
+/// Upper bound on an SVG icon file before parsing (1 MiB; real theme icons are
+/// typically a few KiB).
+const MAX_SVG_FILE_BYTES: u64 = 1024 * 1024;
 /// The GUI paints icons at ~18 px; 32 is the size desktop shells hand out.
 const TARGET_SIZE: u32 = 32;
 
@@ -214,7 +218,8 @@ fn parse_xsettings_icon_theme(mut data: &[u8]) -> Option<&str> {
     theme
 }
 
-/// `gtk-icon-theme-name` from the GTK 3/4 settings.ini, if present.
+/// `gtk-icon-theme-name` from GTK 3/4 `settings.ini`, or KDE's `kdeglobals`
+/// `[Icons] Theme=`, if present.
 fn current_icon_theme(home: Option<&Path>) -> Option<String> {
     #[cfg(target_os = "linux")]
     if let Some(theme) = x11_icon_theme() {
@@ -241,6 +246,33 @@ fn current_icon_theme(home: Option<&Path>) -> Option<String> {
                 if !name.is_empty() {
                     return Some(name);
                 }
+            }
+        }
+    }
+    if let Ok(text) = std::fs::read_to_string(config_home.join("kdeglobals"))
+        && let Some(theme) = parse_kde_icon_theme(&text)
+    {
+        return Some(theme);
+    }
+    None
+}
+
+fn parse_kde_icon_theme(text: &str) -> Option<String> {
+    let mut in_icons = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_icons = line == "[Icons]";
+            continue;
+        }
+        if in_icons
+            && let Some(v) = line
+                .strip_prefix("Theme")
+                .and_then(|r| r.trim().strip_prefix('='))
+        {
+            let name = v.trim().trim_matches('"').to_string();
+            if !name.is_empty() {
+                return Some(name);
             }
         }
     }
@@ -277,7 +309,7 @@ impl IconResolver {
     pub fn icon_rgba_for_exe(&self, exe_path: &str) -> Option<(u32, u32, Vec<u8>)> {
         let name = self.icon_name_for(exe_path)?;
         let file = self.find_icon_file(&name)?;
-        decode_png_rgba(&file)
+        decode_icon_rgba(&file)
     }
 
     /// The icon the theme shows for an executable that has no icon of its own
@@ -286,7 +318,7 @@ impl IconResolver {
     pub fn default_app_icon_rgba(&self) -> Option<(u32, u32, Vec<u8>)> {
         DEFAULT_APP_ICON_NAMES
             .iter()
-            .find_map(|name| self.find_icon_file(name).and_then(|f| decode_png_rgba(&f)))
+            .find_map(|name| self.find_icon_file(name).and_then(|f| decode_icon_rgba(&f)))
     }
 
     /// The icon name (or absolute path) the OS would use for `exe_path`.
@@ -367,23 +399,31 @@ impl IconResolver {
                 }
             }
         }
-        // Legacy pixmaps dirs: `<data_dir>/pixmaps/<name>.png` (covers NixOS
-        // profiles such as `/run/current-system/sw/share/pixmaps`), then the
-        // explicit `<pixmaps>/<name>.png` fallback.
+        // Legacy pixmaps dirs: `<data_dir>/pixmaps/<name>.{png,svg}` (covers
+        // NixOS profiles such as `/run/current-system/sw/share/pixmaps`), then
+        // the explicit `<pixmaps>/<name>.{png,svg}` fallback.
         for data_dir in &self.lookup.data_dirs {
-            let f = data_dir.join("pixmaps").join(format!("{name}.png"));
-            if f.is_file() {
+            if let Some(f) = find_icon_in_dir(&data_dir.join("pixmaps"), name) {
                 return Some(f);
             }
         }
-        if let Some(px) = &self.lookup.pixmaps {
-            let f = px.join(format!("{name}.png"));
-            if f.is_file() {
-                return Some(f);
-            }
+        if let Some(px) = &self.lookup.pixmaps
+            && let Some(f) = find_icon_in_dir(px, name)
+        {
+            return Some(f);
         }
         None
     }
+}
+
+fn find_icon_in_dir(dir: &Path, name: &str) -> Option<PathBuf> {
+    for ext in ["png", "svg"] {
+        let candidate = dir.join(format!("{name}.{ext}"));
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Unwrap NixOS `wrapProgram` hidden binary names such as `.floorp-wrapped`
@@ -559,15 +599,14 @@ fn theme_inherits(icon_dirs: &[PathBuf], theme: &str) -> Vec<String> {
     Vec::new()
 }
 
-/// Find `<icon_dir>/<theme>/<size>/<context>/<name>.png`, choosing the size
-/// closest to [`TARGET_SIZE`]. Uses the theme's `index.theme` directory list
-/// when present; otherwise walks the two-level `<size>/<context>` layout.
+/// Find `<icon_dir>/<theme>/<size>/<context>/<name>.{png,svg}`, choosing the
+/// size closest to [`TARGET_SIZE`]. Uses the theme's `index.theme` directory
+/// list when present; otherwise walks the two-level `<size>/<context>` layout.
 fn find_in_theme(icon_dir: &Path, theme: &str, name: &str) -> Option<PathBuf> {
     let theme_dir = icon_dir.join(theme);
     if !theme_dir.is_dir() {
         return None;
     }
-    let target = format!("{name}.png");
     // Candidate subdirs with their nominal size, best (closest to 32) first.
     let mut candidates: Vec<(u32, PathBuf)> = Vec::new();
     if let Some(dirs) = theme_directories(&theme_dir) {
@@ -598,16 +637,15 @@ fn find_in_theme(icon_dir: &Path, theme: &str, name: &str) -> Option<PathBuf> {
     }
     candidates.sort_by_key(|(size, _)| size.abs_diff(TARGET_SIZE));
     for (_, dir) in candidates {
-        // The icon may sit directly in the size dir (rare) or one context
-        // level deeper (the standard layout).
-        let direct = dir.join(&target);
-        if direct.is_file() {
+        // The icon may sit directly in the size dir (Breeze layout, e.g.
+        // `apps/48`, `mimetypes/32`) or one context level deeper (hicolor
+        // `32x32/apps`, `scalable/apps`).
+        if let Some(direct) = find_icon_in_dir(&dir, name) {
             return Some(direct);
         }
         if let Ok(contexts) = std::fs::read_dir(&dir) {
             for ctx in contexts.flatten() {
-                let f = ctx.path().join(&target);
-                if f.is_file() {
+                if let Some(f) = find_icon_in_dir(&ctx.path(), name) {
                     return Some(f);
                 }
             }
@@ -653,6 +691,69 @@ fn theme_directories(theme_dir: &Path) -> Option<Vec<(u32, String)>> {
             .map(|d| (sizes.get(&d).copied().unwrap_or(0), d))
             .collect(),
     )
+}
+
+/// Decode a PNG or SVG icon file to straight-alpha RGBA sized to at most
+/// [`MAX_ICON_EDGE`] on a side.
+pub fn decode_icon_rgba(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
+    {
+        decode_svg_rgba(path)
+    } else {
+        decode_png_rgba(path)
+    }
+}
+
+/// Rasterize an SVG icon file to straight-alpha RGBA with its longest edge
+/// scaled to [`MAX_ICON_EDGE`]. File reads are capped at [`MAX_SVG_FILE_BYTES`]
+/// and external resource loading remains disabled (`resources_dir = None`).
+pub fn decode_svg_rgba(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+    use std::io::Read as _;
+
+    let file = std::fs::File::open(path).ok()?;
+    let mut data = Vec::new();
+    file.take(MAX_SVG_FILE_BYTES + 1)
+        .read_to_end(&mut data)
+        .ok()?;
+    if data.is_empty() || data.len() as u64 > MAX_SVG_FILE_BYTES {
+        return None;
+    }
+    decode_svg_bytes_rgba(&data)
+}
+
+fn decode_svg_bytes_rgba(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let opts = resvg::usvg::Options::default();
+    let tree = resvg::usvg::Tree::from_data(data, &opts).ok()?;
+    let size = tree.size();
+    let sw = size.width();
+    let sh = size.height();
+    if !sw.is_finite() || !sh.is_finite() || sw <= 0.0 || sh <= 0.0 {
+        return None;
+    }
+    let scale = MAX_ICON_EDGE as f32 / sw.max(sh);
+    let width = (sw * scale).round().clamp(1.0, MAX_ICON_EDGE as f32) as u32;
+    let height = (sh * scale).round().clamp(1.0, MAX_ICON_EDGE as f32) as u32;
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
+    let transform = resvg::tiny_skia::Transform::from_scale(width as f32 / sw, height as f32 / sh);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    // `tiny-skia` produces premultiplied RGBA; convert back to straight-alpha
+    // RGBA to match `decode_png_rgba` and `ColorImage::from_rgba_unmultiplied`.
+    let expected = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    let mut out = Vec::with_capacity(expected);
+    for px in pixmap.pixels() {
+        let c = px.demultiply();
+        out.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+    }
+    if out.len() != expected {
+        return None;
+    }
+    Some((width, height, out))
 }
 
 /// Decode a PNG file to straight-alpha RGBA, box-downsampling anything larger
@@ -1275,5 +1376,75 @@ mod tests {
             resolver.icon_name_for("/nix/store/hash-other/bin/.other-app-wrapped"),
             Some("other-app".to_string())
         );
+    }
+
+    #[test]
+    fn svg_theme_icons_and_default_executable_icon_rasterize_to_straight_rgba() {
+        let sb = Sandbox::new("svg-icons");
+        let share = sb.root.join("share");
+        let theme_dir = share.join("icons/breeze-dark");
+        std::fs::create_dir_all(theme_dir.join("mimetypes/32")).unwrap();
+        std::fs::create_dir_all(theme_dir.join("apps/48")).unwrap();
+        std::fs::write(
+            theme_dir.join("index.theme"),
+            "[Icon Theme]\nName=Breeze Dark\nDirectories=mimetypes/32,apps/48\n\
+             [mimetypes/32]\nSize=32\n[apps/48]\nSize=48\n",
+        )
+        .unwrap();
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">
+            <rect x="0" y="0" width="32" height="32" fill="rgb(255,0,0)" fill-opacity="0.5"/>
+        </svg>"#;
+        std::fs::write(
+            theme_dir.join("mimetypes/32/application-x-executable.svg"),
+            svg,
+        )
+        .unwrap();
+        std::fs::write(theme_dir.join("apps/48/utilities-system-monitor.svg"), svg).unwrap();
+        write_desktop(
+            &share.join("applications/io.github.cet_t.Taskman.desktop"),
+            "[Desktop Entry]\nName=Taskman\nExec=taskman\nIcon=utilities-system-monitor\n",
+        );
+
+        let resolver = IconResolver::new(IconLookup {
+            data_dirs: vec![share],
+            pixmaps: None,
+            theme: Some("breeze-dark".to_string()),
+        });
+        let (w, h, rgba) = resolver
+            .default_app_icon_rgba()
+            .expect("default SVG icon must decode");
+        assert_eq!((w, h), (MAX_ICON_EDGE, MAX_ICON_EDGE));
+        assert_eq!(rgba.len(), (w * h * 4) as usize);
+        // Straight-alpha demultiplication keeps pure red near 255 even at 50% opacity.
+        let center = (((h / 2) * w + (w / 2)) * 4) as usize;
+        assert!(rgba[center] >= 250, "r={}", rgba[center]);
+        assert!(rgba[center + 1] <= 5, "g={}", rgba[center + 1]);
+        assert!(rgba[center + 2] <= 5, "b={}", rgba[center + 2]);
+        assert!(
+            (120..=135).contains(&rgba[center + 3]),
+            "a={}",
+            rgba[center + 3]
+        );
+
+        let (aw, ah, app_rgba) = resolver
+            .icon_rgba_for_exe("/nix/store/hash-taskman/bin/.taskman-wrapped")
+            .expect("wrapped app SVG icon must decode");
+        assert_eq!((aw, ah), (MAX_ICON_EDGE, MAX_ICON_EDGE));
+        assert_eq!(app_rgba.len(), (aw * ah * 4) as usize);
+
+        assert_eq!(decode_svg_bytes_rgba(b"not valid svg"), None);
+    }
+
+    #[test]
+    fn kdeglobals_icon_theme_is_parsed_from_icons_section_only() {
+        let text = "\
+[General]
+Theme=WrongSection
+[Icons]
+Theme=breeze-dark
+[KDE]
+Theme=AlsoWrong
+";
+        assert_eq!(parse_kde_icon_theme(text).as_deref(), Some("breeze-dark"));
     }
 }
