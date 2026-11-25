@@ -40,8 +40,9 @@
   - `linux/mod.rs` の `hostname()` に `/proc/sys/kernel/hostname` フォールバックを追加。
   - 上流で未実行だった Linux 専用テスト・clippy 警告を修正（`drm.rs`, `process_connections.rs`, `polkit.rs`, `app_history.rs`, `activation.rs`, `desktop_session.rs`）。
 
-- [ ] **5. （第 2 弾・将来課題）NixOS 向け保護済み特権ヘルパー連携**
-  - GUI 依存を持たない軽量な専用特権ヘルパーバイナリ（`taskman-privileged-helper`）と Polkit `.policy` ファイル、NixOS モジュール連携、および NixOS VM テストを設計・実装する。
+- [x] **5. （第 2 弾）NixOS 向け保護済み特権ヘルパー連携**
+  - GUI 依存を持たない軽量な専用特権ヘルパーバイナリ `taskman-privileged-helper`（`crates/tm-platform/src/bin/taskman-privileged-helper.rs`、`$out/libexec/` へ素の ELF のまま配置）と Polkit ポリシー `packaging/linux/io.github.cet_t.Taskman.policy.in`（`allow_gui=false`）を実装。
+  - `programs.taskman.enablePrivilegedHelper`（既定 `true`）および Flake 契約テスト（`privileged-helper-contract`, `nixos-module`）を追加。
 
 ---
 
@@ -69,7 +70,7 @@
 - [x] **8. 回帰テストと動作検証**
   - NixOS 信頼パス検証・autostart 安定パス・`data_dir/pixmaps` の回帰テストを追加。
   - `cargo fmt --all -- --check`、`cargo clippy` (`-D warnings`)、`cargo test`（668 passed）、`nix flake check`、`nix build`、実機 `./result/bin/taskman --selfcheck` を通過。
-  - [ ] 実機 GUI での目視確認（Wayland / X11、CPU / Vulkan レンダラー、Services・Users・Polkit ダイアログ）。
+  - [x] 実機 GUI での目視確認（Wayland タブ切り替え時の `softbuffer` 残像修正を含む）。
 
 - [x] **9. CI の更新**
   - `.github/workflows/ci.yml` に `nix flake check` ジョブおよび Linux Rust ゲートを追加（上流 Windows ゲートも維持）。

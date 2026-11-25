@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "taskman-privileged-helper"
+path = "src/bin/taskman-privileged-helper.rs"
+
 [dependencies]
 tm-core = { workspace = true }
 sysinfo = { workspace = true }

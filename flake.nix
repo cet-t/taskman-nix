@@ -82,6 +82,21 @@
         pkgs:
         let
           pkg = self.packages.${pkgs.stdenv.hostPlatform.system}.taskman;
+          nixosEval = nixpkgs.lib.nixosSystem {
+            system = pkgs.stdenv.hostPlatform.system;
+            modules = [
+              self.nixosModules.default
+              {
+                programs.taskman.enable = true;
+                system.stateVersion = "25.05";
+                fileSystems."/" = {
+                  device = "nodev";
+                  fsType = "ext4";
+                };
+                boot.loader.grub.device = "nodev";
+              }
+            ];
+          };
         in
         {
           package = pkg;
@@ -91,6 +106,42 @@
             export TASKMAN_DATA_DIR="$TMPDIR/data"
             mkdir -p "$TASKMAN_CONFIG_DIR" "$TASKMAN_DATA_DIR"
             ${pkgs.lib.getExe pkg} --selfcheck --mock > "$out"
+          '';
+
+          privileged-helper-contract = pkgs.runCommand "taskman-privileged-helper-contract" { } ''
+            helper="${pkg}/libexec/taskman-privileged-helper"
+            policy="${pkg}/share/polkit-1/actions/io.github.cet_t.Taskman.policy"
+
+            test -x "$helper"
+            test ! -e "${pkg}/bin/taskman-privileged-helper"
+
+            # Verify helper is a direct ELF binary, never a shell wrapper script.
+            magic="$(od -An -tx1 -N4 "$helper" | tr -d ' \n')"
+            test "$magic" = "7f454c46"
+
+            # Missing args must fail with exit code 2.
+            set +e
+            "$helper"
+            rc_missing=$?
+            "$helper" --linux-privileged-action=kill --linux-privileged-pid=999999 --linux-privileged-identity=1
+            rc_nonroot=$?
+            set -e
+            test "$rc_missing" -eq 2
+            test "$rc_nonroot" -eq 1
+
+            # Verify Polkit policy binds the exact immutable helper store path and disables GUI forwarding.
+            test -f "$policy"
+            grep -Fq "<annotate key=\"org.freedesktop.policykit.exec.path\">$helper</annotate>" "$policy"
+            grep -Fq '<annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>' "$policy"
+
+            echo "ok" > "$out"
+          '';
+
+          nixos-module = pkgs.runCommand "taskman-nixos-module-check" { } ''
+            test "${nixpkgs.lib.boolToString nixosEval.config.security.polkit.enable}" = "true"
+            test "${nixpkgs.lib.boolToString (builtins.elem "/share/polkit-1" nixosEval.config.environment.pathsToLink)}" = "true"
+            test "${nixpkgs.lib.boolToString (builtins.any (p: (p.pname or "") == "taskman") nixosEval.config.environment.systemPackages)}" = "true"
+            echo "ok" > "$out"
           '';
         }
       );

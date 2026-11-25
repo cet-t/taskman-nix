@@ -15,7 +15,7 @@ use super::launch;
 use super::services;
 use crate::command_line;
 use crate::linux_action_support::{
-    PrivilegedAction, is_privileged_helper_arg, parse_privileged_action,
+    PrivilegedAction, invocation_args, is_privileged_helper_arg, parse_privileged_action,
 };
 
 const COMPILED_PKEXEC_PATH: Option<&str> = option_env!("TASKMAN_PKEXEC_PATH");
@@ -25,6 +25,12 @@ const PKEXEC_CANDIDATES: [&str; 5] = [
     "/bin/pkexec",
     "/usr/sbin/pkexec",
     "/run/current-system/sw/bin/pkexec",
+];
+const COMPILED_PRIVILEGED_HELPER_PATH: Option<&str> = option_env!("TASKMAN_PRIVILEGED_HELPER_PATH");
+const PRIVILEGED_HELPER_CANDIDATES: [&str; 3] = [
+    "/run/current-system/sw/libexec/taskman-privileged-helper",
+    "/usr/libexec/taskman-privileged-helper",
+    "/usr/lib/taskman/taskman-privileged-helper",
 ];
 const MAX_PKEXEC_DIAGNOSTIC_CHARS: usize = 4 * 1024;
 
@@ -56,6 +62,40 @@ pub fn handle_helper(args: &[String]) -> Option<i32> {
         Err(error) => {
             eprintln!("taskman: Linux privileged helper failed: {error}");
             Some(1)
+        }
+    }
+}
+
+/// Entry point for the dedicated, GUI-free `taskman-privileged-helper` binary.
+///
+/// Unlike `handle_helper`, this refuses empty or non-helper invocations outright
+/// and never allows `Relaunch` (so the GUI binary is never elevated to root).
+pub fn run_standalone_helper(args: &[String]) -> i32 {
+    if args.is_empty() || !args.iter().all(|arg| is_privileged_helper_arg(arg)) {
+        eprintln!("taskman-privileged-helper: invalid or missing privileged action arguments");
+        return 2;
+    }
+    if !is_elevated() {
+        eprintln!("taskman-privileged-helper: requires effective uid 0");
+        return 1;
+    }
+
+    let action = match parse_privileged_action(args) {
+        Ok(PrivilegedAction::Relaunch { .. }) => {
+            eprintln!("taskman-privileged-helper: elevated GUI relaunch is not permitted");
+            return 2;
+        }
+        Ok(action) => action,
+        Err(error) => {
+            eprintln!("taskman-privileged-helper: invalid request: {error}");
+            return 2;
+        }
+    };
+    match execute_privileged_action(action) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("taskman-privileged-helper: failed: {error}");
+            1
         }
     }
 }
@@ -119,17 +159,21 @@ pub(super) fn run_privileged_action(action: &PrivilegedAction) -> Result<()> {
                 action_label_service(*action),
             )
         }
-        // A portable GUI is user-writable. Never ask Polkit to execute that
-        // mutable image as root merely to mirror an in-process syscall.
+        // Only invoke the dedicated, root-owned, non-writable helper binary
+        // (`taskman-privileged-helper`). Portable/dev builds have no trusted
+        // helper at those paths and fail closed.
         PrivilegedAction::Kill { .. }
         | PrivilegedAction::Suspend { .. }
         | PrivilegedAction::Resume { .. }
         | PrivilegedAction::SetPriority { .. }
-        | PrivilegedAction::SetAffinity { .. } => Err(TmError::Unsupported(
-            "privileged process action in a portable installation; run TaskMan from a protected install",
-        )),
+        | PrivilegedAction::SetAffinity { .. } => {
+            let helper = privileged_helper_path()?;
+            let args = invocation_args(action)
+                .map_err(|error| TmError::platform(action.label(), error))?;
+            run_pkexec(&helper, &args, action.label())
+        }
         PrivilegedAction::Relaunch { .. } => Err(TmError::Unsupported(
-            "elevated GUI relaunch from a portable installation",
+            "elevated GUI relaunch is disabled; use the dedicated privileged helper for individual actions",
         )),
     }
 }
@@ -215,6 +259,19 @@ fn pkexec_path() -> Result<PathBuf> {
         .chain(PKEXEC_CANDIDATES)
         .collect();
     trusted_program(&candidates)
+}
+
+fn privileged_helper_path() -> Result<PathBuf> {
+    let candidates: Vec<&str> = COMPILED_PRIVILEGED_HELPER_PATH
+        .into_iter()
+        .filter(|path| !path.is_empty())
+        .chain(PRIVILEGED_HELPER_CANDIDATES)
+        .collect();
+    trusted_program(&candidates).map_err(|_| {
+        TmError::Unsupported(
+            "privileged process action requires an installed protected helper (taskman-privileged-helper)",
+        )
+    })
 }
 
 fn trusted_program(candidates: &[&str]) -> Result<PathBuf> {
@@ -359,6 +416,38 @@ mod tests {
         assert_eq!(
             handle_helper(&["--size=1280x800".to_string(), "--verbose".to_string()]),
             None
+        );
+    }
+
+    #[test]
+    fn standalone_helper_rejects_missing_or_foreign_arguments() {
+        assert_eq!(run_standalone_helper(&[]), 2);
+        assert_eq!(run_standalone_helper(&["--verbose".to_string()]), 2);
+        assert_eq!(
+            run_standalone_helper(&[
+                "--linux-privileged-action=kill".to_string(),
+                "--unexpected".to_string(),
+            ]),
+            2
+        );
+    }
+
+    #[test]
+    fn standalone_helper_refuses_to_run_without_root_or_for_relaunch() {
+        if !is_elevated() {
+            assert_eq!(
+                run_standalone_helper(&[
+                    "--linux-privileged-action=kill".to_string(),
+                    "--linux-privileged-pid=999999".to_string(),
+                    "--linux-privileged-identity=1".to_string(),
+                ]),
+                1
+            );
+        }
+        assert!(
+            PRIVILEGED_HELPER_CANDIDATES
+                .iter()
+                .all(|path| path.starts_with('/'))
         );
     }
 }

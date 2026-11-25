@@ -30,6 +30,13 @@ continue to be integrated cleanly.
 - **Fork-scoped App ID**: uses `io.github.cet_t.Taskman` (`.desktop` entry,
   Wayland `app_id`, X11 `WM_CLASS`, and XDG autostart entry) to avoid desktop
   entry collisions with upstream builds.
+- **Dedicated NixOS privileged helper & Polkit policy**: ships a minimal,
+  GUI-free, unwrapped ELF binary (`libexec/taskman-privileged-helper`) paired
+  with `share/polkit-1/actions/io.github.cet_t.Taskman.policy`
+  (`allow_gui=false`) for on-demand Polkit-authenticated process control
+  (terminating/suspending other users' processes, raising priority, or setting
+  affinity) with PID + start-ticks identity checks. Portable/dev builds keep
+  failing closed, and full-GUI root relaunch stays disabled.
 - **Native Linux test & lint fixes**: fixes pre-existing Linux-only test and
   clippy issues so the full Linux test suite passes natively on NixOS and CI.
 
@@ -79,7 +86,12 @@ nix run github:cet-t/taskman
       modules = [
         taskman.nixosModules.default
         {
-          programs.taskman.enable = true;
+          programs.taskman = {
+            enable = true;
+            # Installs `libexec/taskman-privileged-helper` + Polkit policy (default: true).
+            # Set to `false` to disable privileged process actions completely.
+            enablePrivilegedHelper = true;
+          };
         }
       ];
     };
@@ -158,11 +170,13 @@ Press <kbd>F1</kbd> inside the app for the complete localized shortcut overlay.
 
 ## Known limitations on NixOS / Linux
 
-- **Privileged per-process actions** (killing/suspending other users' processes
-  or raising nice priority into negative values) are currently fail-closed
-  without running as root. A dedicated, minimal Polkit helper binary + NixOS
-  policy integration is planned as a follow-up phase. Systemd service control
-  already supports on-demand Polkit authentication via `/run/wrappers/bin/pkexec`.
+- **Privileged per-process actions require NixOS module / system installation**:
+  the Polkit policy (`io.github.cet_t.Taskman.policy`) is picked up by `polkitd`
+  when installed via `programs.taskman.enable = true;` (or
+  `environment.systemPackages` with `security.polkit.enable = true`). Ad-hoc
+  `nix run` or user-writable dev builds without an installed helper remain
+  fail-closed for other users' processes, and full-GUI root relaunch is
+  deliberately disabled.
 - **Native Wayland window inventory**: Wayland does not expose a portable
   whole-desktop window list, so native Wayland Apps are classified via systemd
   `app.slice` / launcher metadata while XWayland apps use EWMH.

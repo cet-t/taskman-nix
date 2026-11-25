@@ -94,10 +94,8 @@ pub(crate) fn is_privileged_helper_arg(argument: &str) -> bool {
 ///
 /// No value is ever concatenated into a shell command. Every action field is
 /// carried by its own typed flag, and relaunch arguments remain distinct argv
-/// entries even when they contain spaces or shell metacharacters. The current
-/// portable GUI does not pass this argv to `pkexec`; only trusted `systemctl`
-/// is elevated until a protected helper image is installed.
-#[cfg(test)]
+/// entries even when they contain spaces or shell metacharacters.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn invocation_args(action: &PrivilegedAction) -> Result<Vec<String>, String> {
     let mut args = Vec::new();
     match action {
@@ -164,14 +162,14 @@ pub(crate) fn invocation_args(action: &PrivilegedAction) -> Result<Vec<String>, 
     Ok(args)
 }
 
-#[cfg(test)]
+#[cfg(any(target_os = "linux", test))]
 fn push_process_fields(args: &mut Vec<String>, kind: &str, pid: u32, start_ticks: i64) {
     args.push(format!("{ACTION_ARG}{kind}"));
     args.push(format!("{PID_ARG}{pid}"));
     args.push(format!("{IDENTITY_ARG}{start_ticks}"));
 }
 
-#[cfg(test)]
+#[cfg(any(target_os = "linux", test))]
 fn push_relaunch_arguments(
     args: &mut Vec<String>,
     arguments: &[String],
@@ -432,7 +430,7 @@ pub(crate) fn validate_environment_name(name: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(target_os = "linux", test))]
 fn priority_argument(priority: PriorityClass) -> Option<&'static str> {
     match priority {
         PriorityClass::High => Some("high"),
