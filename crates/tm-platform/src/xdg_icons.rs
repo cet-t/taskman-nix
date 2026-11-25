@@ -307,6 +307,12 @@ impl IconResolver {
         if let Some(icon) = self.desktop_index.get(&base) {
             return Some(icon.clone());
         }
+        if let Some(unwrapped) = unwrap_nix_wrapper_name(&base) {
+            if let Some(icon) = self.desktop_index.get(unwrapped) {
+                return Some(icon.clone());
+            }
+            return Some(unwrapped.to_string());
+        }
         // No desktop entry: the icon theme spec's fallback is the executable
         // basename as a themed icon name (hicolor ships one for most apps).
         Some(base)
@@ -380,6 +386,24 @@ impl IconResolver {
     }
 }
 
+/// Unwrap NixOS `wrapProgram` hidden binary names such as `.floorp-wrapped`
+/// (including nested wrappers like `..foo-wrapped-wrapped`) back to `foo`.
+fn unwrap_nix_wrapper_name(base: &str) -> Option<&str> {
+    let mut current = base;
+    let mut unwrapped = false;
+    while let Some(inner) = current
+        .strip_prefix('.')
+        .and_then(|s| s.strip_suffix("-wrapped"))
+    {
+        if inner.is_empty() {
+            break;
+        }
+        current = inner;
+        unwrapped = true;
+    }
+    unwrapped.then_some(current)
+}
+
 /// Scan `<data_dir>/applications` (recursively, one level of subdirs is
 /// enough for KDE's legacy layout) for `.desktop` files and index their
 /// `Icon=` by exe basename. Matching rules: the first meaningful token of
@@ -421,6 +445,7 @@ fn build_desktop_index(data_dirs: &[PathBuf]) -> HashMap<String, String> {
                     .as_deref()
                     .and_then(exec_first_binary)
                     .and_then(|b| b.rsplit('/').next().map(str::to_ascii_lowercase))
+                    .map(|b| unwrap_nix_wrapper_name(&b).map(str::to_owned).unwrap_or(b))
                     .filter(|b| !b.is_empty() && !WRAPPER_BINARIES.contains(&b.as_str()))
                 {
                     index.entry(exe_base).or_insert_with(|| icon.clone());
@@ -1218,5 +1243,37 @@ mod tests {
             theme: None,
         });
         assert_eq!(resolver.find_icon_file("nixapp"), Some(icon));
+    }
+
+    #[test]
+    fn nix_wrapped_binary_names_resolve_desktop_and_theme_icons() {
+        assert_eq!(unwrap_nix_wrapper_name(".floorp-wrapped"), Some("floorp"));
+        assert_eq!(
+            unwrap_nix_wrapper_name("..foo-wrapped-wrapped"),
+            Some("foo")
+        );
+        assert_eq!(unwrap_nix_wrapper_name("floorp"), None);
+        assert_eq!(unwrap_nix_wrapper_name(".-wrapped"), None);
+
+        let sb = Sandbox::new("nix-wrapped-icons");
+        let share = sb.root.join("share");
+        write_desktop(
+            &share.join("applications/floorp.desktop"),
+            "[Desktop Entry]\nName=Floorp\nExec=/nix/store/hash-floorp/bin/floorp %u\nIcon=floorp-browser\n",
+        );
+
+        let resolver = IconResolver::new(IconLookup {
+            data_dirs: vec![share],
+            pixmaps: None,
+            theme: None,
+        });
+        assert_eq!(
+            resolver.icon_name_for("/nix/store/hash-floorp/bin/.floorp-wrapped"),
+            Some("floorp-browser".to_string())
+        );
+        assert_eq!(
+            resolver.icon_name_for("/nix/store/hash-other/bin/.other-app-wrapped"),
+            Some("other-app".to_string())
+        );
     }
 }
