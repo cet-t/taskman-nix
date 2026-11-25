@@ -230,8 +230,8 @@ fn read_temperature(device: &Path) -> Option<f32> {
 
 fn temperature_millidegrees_to_c(raw: i64) -> Option<f32> {
     let celsius = raw as f32 / 1000.0;
-    // A driver that has no valid sample may expose a sentinel or all-ones.
-    (-20.0..=200.0).contains(&celsius).then_some(celsius)
+    // A driver that has no valid sample may expose a negative sentinel or all-ones.
+    (0.0..=200.0).contains(&celsius).then_some(celsius)
 }
 
 fn parse_pci_id(uevent: &str) -> (Option<u16>, Option<u16>) {

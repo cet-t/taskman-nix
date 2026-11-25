@@ -1,195 +1,191 @@
-# TaskMan
+# TaskMan (NixOS Fork)
 
-A faithful, native-feeling Windows Task Manager reimplementation in Rust —
-down to ClearType text rendering and a software renderer that needs no GPU
-driver at all.
+A fast, native-feeling Task Manager and system monitor in Rust, adapted and
+packaged for **NixOS** (Wayland & X11).
 
-Four-crate workspace built around a strict platform boundary, with an
-optional protected Windows service for privileged operations and for
-telemetry an ordinary process cannot get unelevated.
+This repository is a NixOS-focused fork of
+[aufkrawall/taskman](https://github.com/aufkrawall/taskman) (MIT License).
+Upstream Windows and macOS support is preserved in-tree so upstream fixes can
+continue to be integrated cleanly.
 
-## Screenshots
+## What this fork adds for NixOS
 
-**Processes** — Apps / Background / Windows grouping driven by window
-ownership, with CPU, memory, GPU, network, disk I/O and disk active time
-sampled live.
-
-![TaskMan Processes tab](docs/screenshots/processes.png)
-
-**Performance** — overall and per-logical-processor CPU graphs with a
-cursor-anchored readout, alongside memory, per-disk, per-adapter network and
-per-engine GPU views.
-
-![TaskMan Performance tab](docs/screenshots/performance.png)
-
-**Details** — the literal PPID tree over the typed column catalog; the
-User name column is redacted in this capture.
-
-![TaskMan Details tab](docs/screenshots/details.png)
-
-## Support
-
-[![GitHub Sponsors](https://img.shields.io/badge/Sponsor%20on%20GitHub-%23EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/aufkrawall)
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-%23FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/aufkrawall)
-
-Support through GitHub Sponsors or Buy Me a Coffee helps with development time,
-hardware, and tooling. My other open-source projects would also profit from
-donations; they are listed in [Other projects](#other-projects) at the bottom of
-this page.
+- **Nix Flake & declarative modules** (`flake.nix`, `nix/`): reproducible
+  packages (`x86_64-linux`, `aarch64-linux`), `overlays.default`,
+  `nixosModules.default`, `homeManagerModules.default`, `devShells.default`,
+  and `checks` (including headless `--selfcheck --mock`).
+- **NixOS `/nix/store` trust-chain support**: allows immutable, root-owned store
+  binaries beneath multi-user `/nix/store` (`1775 root:nixbld`, sticky bit
+  required and verified) while keeping strict ownership/writability checks on
+  every store entry and executable.
+- **Non-FHS system utility resolution**: resolves `systemctl`, `loginctl`,
+  `fc-match`, and `/run/wrappers/bin/pkexec` on NixOS, with build-time store
+  path pinning for non-setuid tools and `xdg-utils` / Wayland / X11 / Vulkan /
+  OpenGL runtime library wrapping.
+- **NixOS-safe XDG autostart & icons**: prefers stable profile paths
+  (`/run/current-system/sw/bin/taskman`, `~/.nix-profile/bin/taskman`,
+  `/etc/profiles/per-user/$USER/bin/taskman`) over ephemeral `/nix/store` paths
+  when generating autostart entries, and searches `$XDG_DATA_DIRS/pixmaps` for
+  legacy icons.
+- **Fork-scoped App ID**: uses `io.github.cet_t.Taskman` (`.desktop` entry,
+  Wayland `app_id`, X11 `WM_CLASS`, and XDG autostart entry) to avoid desktop
+  entry collisions with upstream builds.
+- **Native Linux test & lint fixes**: fixes pre-existing Linux-only test and
+  clippy issues so the full Linux test suite passes natively on NixOS and CI.
 
 ## Highlights
 
-- **Processes** — native-style grouped presentation (Apps / Background /
-  Windows) with window-ownership-driven app grouping, plus a literal PPID
-  tree on Details. Multi-select, search across name, publisher, PID, user,
-  image path and command line, keyboard navigation, and PID-reuse-safe
-  destructive actions.
-- **Performance** — CPU (overall + per-logical-processor with kernel times),
-  memory, disk, network (per-adapter with IPv4/IPv6/SSID/signal metadata),
-  and GPU with per-engine graphs.
-- **Real telemetry, honestly missing** — per-process network comes from a
-  real-time ETW session (hosted by the optional service so the unelevated
-  GUI can see it), GPU engines from DXGI/PDH, process owners from token
-  queries. When telemetry is unavailable the UI shows "—", never a
-  fabricated zero.
-- **Details** — typed column catalog with persisted visibility/order/width,
-  a module inspector with guarded unload, full-memory dumps, priority,
-  affinity, efficiency mode, and UAC virtualization.
-- **Privileged operations behind a protected broker** — `taskman-service.exe`
-  is a delayed-auto LocalSystem service that owns only an allowlisted set of
-  commands over a local named pipe with kernel-derived PID +
-  executable-path checks, protected DACLs, and staged hash-verified upgrades
-  in Program Files.
-- **A vendored egui fork** (`vendor/egui`, tag 0.36.1) that adds sub-pixel
-  (ClearType) text rasterization and a native CPU renderer presenting via
-  `softbuffer`, alongside the glow/wgpu backends. See
-  `vendor/egui/TASKMAN-FORK.md` for the divergence inventory.
-- Tray with close-to-tray and autostart, single-instance coordination, an
-  optional Task Manager replacement (IFEO), German/English localization,
-  and light/dark themes.
+- **Processes** — grouped presentation (Apps / Background / System) using
+  EWMH X11 window evidence and native Wayland systemd/launcher evidence, with
+  CPU, memory, disk I/O, search, multi-select, and PID-reuse-safe actions.
+- **Performance** — overall and per-logical-processor CPU graphs (including
+  kernel time), memory, per-disk stats, per-adapter network metadata
+  (IPv4/IPv6/driver), and DRM GPU telemetry.
+- **Details & Process Properties** — literal PPID tree or flat table, typed
+  persisted column catalog, threads, memory-mapped modules (read-only), TCP/UDP
+  connections, and open file handles.
+- **Services, Users & Startup** — systemd unit listing and on-demand Polkit
+  service control (`systemctl` via `/run/wrappers/bin/pkexec`), `loginctl`
+  sessions, and XDG autostart management.
+- **Honest missing telemetry** — unavailable metrics render as `—` / `Unknown`,
+  never as fabricated zeros.
+- **Sub-pixel (LCD) text & CPU/Vulkan renderers** — ships the vendored egui
+  fork (`vendor/egui`, tag 0.36.1) with fontconfig-driven RGB/BGR LCD text
+  rendering on both the native CPU renderer (default) and Vulkan WGPU.
+
+## Installing on NixOS
+
+### Try immediately
+
+```bash
+nix run github:cet-t/taskman
+```
+
+### NixOS module (`flake.nix`)
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    taskman = {
+      url = "github:cet-t/taskman";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { nixpkgs, taskman, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        taskman.nixosModules.default
+        {
+          programs.taskman.enable = true;
+        }
+      ];
+    };
+  };
+}
+```
+
+### Home Manager module
+
+```nix
+{
+  imports = [ inputs.taskman.homeManagerModules.default ];
+
+  programs.taskman = {
+    enable = true;
+    autostart = true; # declarative ~/.config/autostart/io.github.cet_t.Taskman.desktop
+  };
+}
+```
+
+### Overlay
+
+```nix
+nixpkgs.overlays = [ inputs.taskman.overlays.default ];
+# then use pkgs.taskman
+```
+
+## Building & Development
+
+```bash
+# Enter the Nix development shell (rustc, cargo, clippy, rustfmt, runtime libs)
+nix develop
+
+# Fast local test & lint loop
+cargo test -p tm-core -p tm-platform -p tm-ui -p tm-app
+cargo clippy -p tm-core -p tm-platform -p tm-ui -p tm-app --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+
+# Reproducible Nix package build & checks
+nix flake check
+nix build
+
+# Headless sampling smoke test (prints JSON summary)
+./result/bin/taskman --selfcheck
+```
 
 ## Keyboard shortcuts
 
-The full, localized list is always one keystroke away: press <kbd>F1</kbd>
-for the in-app help.
+Press <kbd>F1</kbd> inside the app for the complete localized shortcut overlay.
 
 | Keys | Action |
 | --- | --- |
-| <kbd>F5</kbd> | Refresh data (also refreshes tab-local caches while paused) |
-| <kbd>F6</kbd> / <kbd>Shift</kbd>+<kbd>F6</kbd> | Move between the search box, the sidebar, the command buttons and the page content |
-| <kbd>Ctrl</kbd>+<kbd>F</kbd> / <kbd>Alt</kbd>+<kbd>F</kbd> | Focus the process search |
-| <kbd>Ctrl</kbd>+<kbd>Tab</kbd> | Next page |
-| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> | Previous page |
+| <kbd>F5</kbd> | Refresh data |
+| <kbd>F6</kbd> / <kbd>Shift</kbd>+<kbd>F6</kbd> | Cycle search box, sidebar, command buttons, and content |
+| <kbd>Ctrl</kbd>+<kbd>F</kbd> / <kbd>Alt</kbd>+<kbd>F</kbd> | Focus search |
+| <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> | Next / previous page |
 | <kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> | Jump directly to page 1–9 |
 | <kbd>Ctrl</kbd>+<kbd>,</kbd> | Settings |
 | <kbd>Ctrl</kbd>+<kbd>N</kbd> | Run new task |
-| <kbd>Del</kbd> | End the selected processes (asks for confirmation; Processes/Details) |
-| <kbd>Menu</kbd> / <kbd>Shift</kbd>+<kbd>F10</kbd> | Open the context menu of the selection |
-| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>Home</kbd> <kbd>End</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move the selection |
-| <kbd>←</kbd> <kbd>→</kbd> | Move between column headers; scrub a focused chart; resize a focused column splitter |
-| <kbd>Ctrl</kbd>+<kbd>←</kbd> <kbd>→</kbd> | Resize the focused column (<kbd>Shift</kbd> for larger steps) |
-| <kbd>Alt</kbd>+<kbd>←</kbd> <kbd>→</kbd> | Move the focused column one position |
-| <kbd>Enter</kbd> | Run the row action / commit the search / sort the focused column |
-| <kbd>Space</kbd> | Add or remove the row from the selection |
-| <kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between controls |
-| <kbd>Esc</kbd> | Close a dialog / clear the search |
-| <kbd>F1</kbd> | Show or hide this help |
-
-Open dialogs keep keyboard ownership while they are up: the global
-shortcuts above stand down until the dialog is closed.
-
-## Requirements
-
-- Windows 11 (developed for and tested on; Linux/macOS platform backends
-  exist in the tree but are secondary)
-- Rust 1.88+ (edition 2024; let-chains and `slice::as_chunks` are used)
-- Python 3.10+ for the `build.py` release driver
-
-## Building
-
-```bash
-# development loop (fast, debug)
-cargo build -p tm-app
-
-# full quality gate: fmt --check + clippy -D warnings + all workspace tests
-# (including Windows integration tests) + the vendored-egui fork gate
-python build.py --check
-
-# release build of the host binary
-python build.py --host-only
-
-# release packaging into dist/ (always adds Linux x86_64; glibc when
-# cross/cargo-zigbuild is installed, otherwise a static musl build via rust-lld)
-python build.py
-```
-
-The binaries land in `target/release/taskman.exe` and
-`target/release/taskman-service.exe`. `taskman.exe --selfcheck` runs a
-headless sampling smoke test and prints a JSON summary.
-
-## Installing on Windows
-
-Release packaging produces two ways to install:
-
-- **Setup installer (recommended):** run
-  `taskman-v<version>-windows-<arch>-setup.exe`. It installs to
-  `%ProgramFiles%\TaskMan`, registers and starts the background service (so
-  the app works without UAC prompts afterwards), creates Start menu and
-  optional desktop shortcuts, and adds an uninstall entry to Settings > Apps.
-  The wizard follows the Windows 11 dark/light theme. Unattended installs use
-  `/S`; see `taskman-setup.exe --help` for `--uninstall`, `--no-start-menu`,
-  `--desktop`, `--launch` and `--no-service`. The install directory is fixed
-  at `%ProgramFiles%\TaskMan` because the service must live in a protected
-  directory.
-- **Portable archive:** extract `taskman-v<version>-windows-<arch>.zip` into
-  an administrator-protected folder and register the service from an elevated
-  prompt with `taskman.exe --core-service=install --core-service-user=<sid>`
-  (or skip the service; protected actions then ask for elevation).
-
-## Repository layout
-
-| Path | What it is |
-| --- | --- |
-| `crates/tm-core` | Platform-agnostic model, engine, settings, app history, i18n |
-| `crates/tm-platform` | OS collectors and actions behind traits (Windows stack under `win/`) |
-| `crates/tm-ui` | Shared Windows-11 theme palette and font setup (app + installer) |
-| `crates/tm-app` | The eframe GUI |
-| `crates/tm-service` | The optional Windows service executable |
-| `crates/tm-installer` | The self-contained Windows setup (`taskman-setup.exe`) |
-| `vendor/egui` | Vendored egui fork (sub-pixel text + CPU renderer) |
-| `audit.md`, `hardening/`, `llm-wiki/` | Parity audit, security-analysis artifacts, and maintainer documentation |
+| <kbd>Del</kbd> | End selected processes (with confirmation) |
+| <kbd>Menu</kbd> / <kbd>Shift</kbd>+<kbd>F10</kbd> | Open context menu |
+| <kbd>F1</kbd> | Show or hide shortcut help |
 
 ## Diagnostics
 
 | Environment variable | Effect |
 | --- | --- |
-| `TASKMAN_RENDERER=cpu\|d3d12\|vulkan\|metal\|opengl\|software\|wgpu` | Pin one compiled renderer backend |
-| `TASKMAN_GPU=cpu\|d3d12\|vulkan\|metal` | Override the saved renderer preference for one run (fallbacks allowed) |
-| `TASKMAN_FPS_PROBE=1` | Continuous repaints + fps overlay |
+| `TASKMAN_RENDERER=cpu\|vulkan\|opengl\|software\|wgpu` | Pin one compiled renderer backend |
+| `TASKMAN_GPU=cpu\|vulkan` | Override saved renderer preference for one run (fallbacks allowed) |
+| `TASKMAN_SUBPIXEL=0\|1` | Disable or request sub-pixel text (bounded by renderer/fontconfig capability) |
+| `TASKMAN_FPS_PROBE=1` | Continuous repaints + FPS overlay |
 | `TASKMAN_DIALOG=settings\|run` | Open a dialog at startup |
 | `TASKMAN_PERF=<key>` | Preselect a Performance resource |
 | `TASKMAN_DATA_DIR` / `TASKMAN_CONFIG_DIR` | Isolate data/config directories |
+| `TASKMAN_AUTOSTART_EXEC=<path>` | Override executable path written to the XDG autostart entry |
 
-## Status
+## Known limitations on NixOS / Linux
 
-Substantially at parity for daily use. The precise remaining gaps (SRUM-backed
-app history, startup-impact telemetry, memory composition, accessibility, and
-more) are itemized in `audit.md` and `llm-wiki/known-debt.md`.
+- **Privileged per-process actions** (killing/suspending other users' processes
+  or raising nice priority into negative values) are currently fail-closed
+  without running as root. A dedicated, minimal Polkit helper binary + NixOS
+  policy integration is planned as a follow-up phase. Systemd service control
+  already supports on-demand Polkit authentication via `/run/wrappers/bin/pkexec`.
+- **Native Wayland window inventory**: Wayland does not expose a portable
+  whole-desktop window list, so native Wayland Apps are classified via systemd
+  `app.slice` / launcher metadata while XWayland apps use EWMH.
+- **No Linux system tray**: the window starts visibly.
 
-## Other projects
+## Repository layout
 
-- [capture-engine](https://github.com/aufkrawall/capture-engine) — game capture,
-  recording, overlays, graphics overrides, and frame pacing for Windows
-- [green-curve](https://github.com/aufkrawall/green-curve) — open-source GPU curve undervolting and overclocking
-- [testsmem4u](https://github.com/aufkrawall/testsmem4u) — cross-platform RAM testing tool using proven patterns
-- [Shader-Stress](https://github.com/aufkrawall/Shader-Stress) — CPU stress test with shader-compilation-like
-  workloads
-- [obs-indicator](https://github.com/aufkrawall/obs-indicator) — a low-overhead OBS recording-status indicator
+| Path | What it is |
+| --- | --- |
+| `flake.nix`, `nix/` | Nix Flake, package derivation, overlay, NixOS & Home Manager modules |
+| `crates/tm-core` | Platform-agnostic model, engine, settings, app history, i18n |
+| `crates/tm-platform` | OS collectors and actions behind traits (`linux/`, `win/`, `macos/`) |
+| `crates/tm-ui` | Shared theme palette and font setup |
+| `crates/tm-app` | The eframe GUI (`taskman`) |
+| `crates/tm-service`, `crates/tm-installer` | Upstream Windows service and installer crates (preserved for upstream parity) |
+| `vendor/egui`, `vendor/winit` | Vendored upstream forks (sub-pixel text, CPU renderer, winit patches) |
 
-More projects are available on [my GitHub profile](https://github.com/aufkrawall?tab=repositories). All of these
-projects would also profit from donations — see [Support](#support) at the top of this page.
+## Attribution & License
 
-## License
-
-MIT — see [LICENSE](LICENSE). The vendored egui fork retains its
-MIT OR Apache-2.0 licensing.
+- Original project: [aufkrawall/taskman](https://github.com/aufkrawall/taskman),
+  Copyright (c) 2026 aufkrawall.
+- NixOS fork modifications: Copyright (c) 2026 cet-t.
+- Licensed under the **MIT License** — see [LICENSE](LICENSE).
+- Vendored third-party crates retain their original licenses:
+  - `vendor/egui`: `MIT OR Apache-2.0`
+  - `vendor/winit`: `Apache-2.0`

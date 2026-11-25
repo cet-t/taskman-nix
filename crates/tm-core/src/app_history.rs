@@ -894,25 +894,26 @@ mod tests {
         );
 
         // Also verify legacy DB without `icon_paths` field seeds from absolute path key
+        #[cfg(windows)]
+        let legacy_key = r"c:\program files\test.exe";
+        #[cfg(not(windows))]
+        let legacy_key = "/usr/bin/test-app";
         let legacy_json = serde_json::json!({
             "since_epoch_s": 12345,
             "entries": {
-                r"c:\program files\test.exe": {
+                legacy_key: {
                     "cpu_seconds": 5.0,
                     "network_bytes": 100,
                     "network_available": true
                 }
             },
             "names": {
-                r"c:\program files\test.exe": "Test Application"
+                legacy_key: "Test Application"
             }
         });
         std::fs::write(&path, legacy_json.to_string()).unwrap();
         let db3 = AppHistoryDb::open(path);
-        assert_eq!(
-            db3.icon_path(r"c:\program files\test.exe"),
-            Some(r"c:\program files\test.exe")
-        );
+        assert_eq!(db3.icon_path(legacy_key), Some(legacy_key));
     }
 
     /// A blank executable path is no icon source: stored as-is it made the page

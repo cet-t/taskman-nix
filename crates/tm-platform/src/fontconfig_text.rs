@@ -11,12 +11,14 @@
 use super::text_rendering::{LcdFilterChoice, Params};
 
 const TRUSTED_FC_MATCH_PATHS: &[&str] = &[
+    "/run/current-system/sw/bin/fc-match",
+    "/nix/var/nix/profiles/default/bin/fc-match",
     "/usr/bin/fc-match",
     "/bin/fc-match",
     "/usr/local/bin/fc-match",
-    "/run/current-system/sw/bin/fc-match",
-    "/nix/var/nix/profiles/default/bin/fc-match",
 ];
+#[cfg(target_os = "linux")]
+const COMPILED_FC_MATCH_PATH: Option<&str> = option_env!("TASKMAN_FC_MATCH_PATH");
 #[cfg(target_os = "linux")]
 const FC_MATCH_DEADLINE: std::time::Duration = std::time::Duration::from_millis(750);
 #[cfg(target_os = "linux")]
@@ -39,6 +41,21 @@ fn is_trusted_program(metadata: ProgramMetadata) -> bool {
 
 fn is_trusted_parent_directory(metadata: ProgramMetadata) -> bool {
     metadata.is_dir && metadata.owner_uid == 0 && metadata.mode & 0o022 == 0
+}
+
+/// NixOS multi-user installs mount `/nix/store` as `root:nixbld` with mode `1775`
+/// (sticky + group-writable for build daemons), while each concrete store entry and
+/// its descendants remain `root`-owned and read-only (`0555`/`0444`). Accept only the
+/// exact `/nix/store` root when it is sticky, root-owned, and not world-writable.
+fn is_trusted_parent_directory_at(path: &std::path::Path, metadata: ProgramMetadata) -> bool {
+    if is_trusted_parent_directory(metadata) {
+        return true;
+    }
+    path == std::path::Path::new("/nix/store")
+        && metadata.is_dir
+        && metadata.owner_uid == 0
+        && metadata.mode & 0o002 == 0
+        && metadata.mode & 0o1000 != 0
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -134,7 +151,12 @@ fn params_from_output(text: &str) -> Params {
 fn resolve_fc_match() -> Option<std::path::PathBuf> {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-    for candidate in TRUSTED_FC_MATCH_PATHS {
+    let candidates = COMPILED_FC_MATCH_PATH
+        .into_iter()
+        .filter(|path| !path.is_empty())
+        .chain(TRUSTED_FC_MATCH_PATHS.iter().copied());
+
+    for candidate in candidates {
         let Ok(path) = std::fs::canonicalize(candidate) else {
             continue;
         };
@@ -167,12 +189,15 @@ fn trusted_path_chain(path: &std::path::Path) -> bool {
         let Ok(metadata) = std::fs::metadata(directory) else {
             return false;
         };
-        if !is_trusted_parent_directory(ProgramMetadata {
-            owner_uid: metadata.uid(),
-            mode: metadata.permissions().mode(),
-            is_file: metadata.is_file(),
-            is_dir: metadata.is_dir(),
-        }) {
+        if !is_trusted_parent_directory_at(
+            directory,
+            ProgramMetadata {
+                owner_uid: metadata.uid(),
+                mode: metadata.permissions().mode(),
+                is_file: metadata.is_file(),
+                is_dir: metadata.is_dir(),
+            },
+        ) {
             return false;
         }
     }
@@ -459,6 +484,65 @@ mod tests {
                 .iter()
                 .all(|path| path.starts_with('/'))
         );
+    }
+
+    #[test]
+    fn nix_store_root_requires_sticky_root_owned_non_world_writable() {
+        let nix_store = std::path::Path::new("/nix/store");
+        assert!(is_trusted_parent_directory_at(
+            nix_store,
+            ProgramMetadata {
+                owner_uid: 0,
+                mode: 0o1775,
+                is_file: false,
+                is_dir: true,
+            }
+        ));
+        assert!(!is_trusted_parent_directory_at(
+            nix_store,
+            ProgramMetadata {
+                owner_uid: 0,
+                mode: 0o0775,
+                is_file: false,
+                is_dir: true,
+            }
+        ));
+        assert!(!is_trusted_parent_directory_at(
+            nix_store,
+            ProgramMetadata {
+                owner_uid: 0,
+                mode: 0o1777,
+                is_file: false,
+                is_dir: true,
+            }
+        ));
+        assert!(!is_trusted_parent_directory_at(
+            nix_store,
+            ProgramMetadata {
+                owner_uid: 1000,
+                mode: 0o1775,
+                is_file: false,
+                is_dir: true,
+            }
+        ));
+        assert!(!is_trusted_parent_directory_at(
+            std::path::Path::new("/nix/store/pkg"),
+            ProgramMetadata {
+                owner_uid: 0,
+                mode: 0o1775,
+                is_file: false,
+                is_dir: true,
+            }
+        ));
+        assert!(!is_trusted_parent_directory_at(
+            std::path::Path::new("/tmp"),
+            ProgramMetadata {
+                owner_uid: 0,
+                mode: 0o1775,
+                is_file: false,
+                is_dir: true,
+            }
+        ));
     }
 
     #[test]

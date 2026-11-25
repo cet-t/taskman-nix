@@ -4,6 +4,7 @@ description = "Shared Windows-11-Task-Manager theme palette and font setup"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 tm-core = { workspace = true }

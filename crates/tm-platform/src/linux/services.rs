@@ -122,8 +122,19 @@ pub(crate) fn control_unit_direct(unit: &str, action: ServiceAction) -> Result<(
     }
 }
 
-fn systemctl_path() -> Result<PathBuf> {
-    for candidate in ["/usr/bin/systemctl", "/bin/systemctl"] {
+const COMPILED_SYSTEMCTL_PATH: Option<&str> = option_env!("TASKMAN_SYSTEMCTL_PATH");
+const SYSTEMCTL_CANDIDATES: [&str; 3] = [
+    "/run/current-system/sw/bin/systemctl",
+    "/usr/bin/systemctl",
+    "/bin/systemctl",
+];
+
+pub(super) fn systemctl_path() -> Result<PathBuf> {
+    let candidates = COMPILED_SYSTEMCTL_PATH
+        .into_iter()
+        .filter(|path| !path.is_empty())
+        .chain(SYSTEMCTL_CANDIDATES);
+    for candidate in candidates {
         let candidate = Path::new(candidate);
         if candidate.is_file()
             && let Ok(path) = launch::trusted_system_program(candidate)

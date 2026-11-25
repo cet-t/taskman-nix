@@ -8,3 +8,4 @@ Terminal=false
 Categories=System;Monitor;
 Keywords=task;manager;process;system;monitor;
 StartupNotify=true
+StartupWMClass=io.github.cet_t.Taskman

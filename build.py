@@ -35,7 +35,7 @@ WINDOWS_ARM64_TARGET = "aarch64-pc-windows-msvc"
 # rustup std component plus the bundled rust-lld linker.
 LINUX_MUSL_TARGET = "x86_64-unknown-linux-musl"
 MUSL_STUB_DIR = ROOT / "target" / "cross-stubs"
-LINUX_DESKTOP = ROOT / "packaging" / "linux" / "io.github.aufkrawall.Taskman.desktop"
+LINUX_DESKTOP = ROOT / "packaging" / "linux" / "io.github.cet_t.Taskman.desktop"
 
 
 def log(msg: str) -> None:
@@ -836,7 +836,7 @@ def main() -> int:
                     windows_service_exe = service_exe
             if platform.system() == "Linux" and LINUX_DESKTOP.exists():
                 host_files.append(
-                    (LINUX_DESKTOP, "share/applications/io.github.aufkrawall.Taskman.desktop")
+                    (LINUX_DESKTOP, "share/applications/io.github.cet_t.Taskman.desktop")
                 )
             artifacts.append((f"taskman-v{version}-{host_tag()}", host_files))
             if windows_service_exe is not None and not args.no_package:
@@ -886,7 +886,7 @@ def main() -> int:
             files = [(exe, "taskman")]
             if LINUX_DESKTOP.exists():
                 files.append(
-                    (LINUX_DESKTOP, "share/applications/io.github.aufkrawall.Taskman.desktop")
+                    (LINUX_DESKTOP, "share/applications/io.github.cet_t.Taskman.desktop")
                 )
             suffix = "" if flavor == "gnu" else f"-{flavor}"
             artifacts.append((f"taskman-v{version}-linux-x86_64{suffix}", files))
@@ -903,7 +903,7 @@ def main() -> int:
             files = [(exe, "taskman")]
             if LINUX_DESKTOP.exists():
                 files.append(
-                    (LINUX_DESKTOP, "share/applications/io.github.aufkrawall.Taskman.desktop")
+                    (LINUX_DESKTOP, "share/applications/io.github.cet_t.Taskman.desktop")
                 )
             artifacts.append((f"taskman-v{version}-linux-arm64", files))
         elif attempted:

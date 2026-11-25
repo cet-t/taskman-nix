@@ -6,17 +6,40 @@ on:
   pull_request:
 
 jobs:
-  gate:
-    name: build.py --check (fmt, clippy, tests, fork gate)
+  nix:
+    name: Nix flake check (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v17
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
+      - name: Run nix flake check
+        run: nix flake check
+
+  linux-rust:
+    name: Linux Rust gate (fmt, clippy, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy -p tm-core -p tm-platform -p tm-ui -p tm-app --all-targets --all-features -- -D warnings
+      - name: Unit tests
+        run: cargo test -p tm-core -p tm-platform -p tm-ui -p tm-app
+
+  windows-gate:
+    name: Upstream Windows gate (build.py --check)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          # Non-host backends the project documents as supported; build.py
-          # --check type-checks them when their std is installed, and the
-          # release phase cross-builds the Linux musl artifact with rust-lld.
           targets: x86_64-unknown-linux-gnu, aarch64-apple-darwin, x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5

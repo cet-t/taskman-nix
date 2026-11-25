@@ -103,7 +103,7 @@ const fn native_gpu_mode() -> RenderMode {
     }
 }
 
-const APP_ID: &str = "io.github.aufkrawall.Taskman";
+const APP_ID: &str = "io.github.cet_t.Taskman";
 const DEFAULT_WINDOW_SIZE: [f32; 2] = [1280.0, 800.0];
 
 #[cfg(target_os = "windows")]

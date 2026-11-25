@@ -4,6 +4,7 @@ description = "Hardened Windows action broker for TaskMan"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "taskman-service"

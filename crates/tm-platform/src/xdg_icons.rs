@@ -361,7 +361,15 @@ impl IconResolver {
                 }
             }
         }
-        // Legacy pixmaps dir: `<pixmaps>/<name>.png`.
+        // Legacy pixmaps dirs: `<data_dir>/pixmaps/<name>.png` (covers NixOS
+        // profiles such as `/run/current-system/sw/share/pixmaps`), then the
+        // explicit `<pixmaps>/<name>.png` fallback.
+        for data_dir in &self.lookup.data_dirs {
+            let f = data_dir.join("pixmaps").join(format!("{name}.png"));
+            if f.is_file() {
+                return Some(f);
+            }
+        }
         if let Some(px) = &self.lookup.pixmaps {
             let f = px.join(format!("{name}.png"));
             if f.is_file() {
@@ -1195,5 +1203,20 @@ mod tests {
             !index.contains_key("python3"),
             "python3 is a wrapper, not PyApp's image"
         );
+    }
+
+    #[test]
+    fn find_icon_file_checks_data_dir_pixmaps_before_legacy_usr_share() {
+        let sb = Sandbox::new("data-dir-pixmaps");
+        let share = sb.root.join("nix-profile-share");
+        let icon = share.join("pixmaps/nixapp.png");
+        write_png(&icon, 32, 32, [0, 128, 255, 255]);
+
+        let resolver = IconResolver::new(IconLookup {
+            data_dirs: vec![share],
+            pixmaps: Some(sb.root.join("missing-pixmaps")),
+            theme: None,
+        });
+        assert_eq!(resolver.find_icon_file("nixapp"), Some(icon));
     }
 }

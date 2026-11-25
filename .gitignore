@@ -1,4 +1,6 @@
 /target
+/result
+/result-*
 bench/*/target
 bench/dist
 /dist

@@ -18,11 +18,12 @@ use crate::linux_action_support::{
     PrivilegedAction, is_privileged_helper_arg, parse_privileged_action,
 };
 
+const COMPILED_PKEXEC_PATH: Option<&str> = option_env!("TASKMAN_PKEXEC_PATH");
 const PKEXEC_CANDIDATES: [&str; 5] = [
+    "/run/wrappers/bin/pkexec",
     "/usr/bin/pkexec",
     "/bin/pkexec",
     "/usr/sbin/pkexec",
-    "/run/wrappers/bin/pkexec",
     "/run/current-system/sw/bin/pkexec",
 ];
 const MAX_PKEXEC_DIAGNOSTIC_CHARS: usize = 4 * 1024;
@@ -84,10 +85,8 @@ pub fn run_new_task(command_line: &str, elevate: bool) -> Result<()> {
         .ok_or_else(|| TmError::platform("run new task", "empty command"))?;
 
     if elevate && !is_elevated() {
-        return Err(TmError::platform(
-            "run new task",
-            "elevated arbitrary task launch is disabled; run the program unelevated or use \
-             the matching desktop service",
+        return Err(TmError::Unsupported(
+            "elevated arbitrary task launch on Linux; run the program unelevated or use the matching desktop service",
         ));
     }
 
@@ -104,7 +103,7 @@ pub(super) fn run_privileged_action(action: &PrivilegedAction) -> Result<()> {
     }
     match action {
         PrivilegedAction::Service { unit, action } => {
-            let systemctl = trusted_program(&["/usr/bin/systemctl", "/bin/systemctl"])?;
+            let systemctl = services::systemctl_path()?;
             let verb = match action {
                 crate::actions::ServiceAction::Start => "start",
                 crate::actions::ServiceAction::Stop => "stop",
@@ -210,7 +209,12 @@ fn run_pkexec(program: &Path, args: &[String], action: &'static str) -> Result<(
 }
 
 fn pkexec_path() -> Result<PathBuf> {
-    trusted_program(&PKEXEC_CANDIDATES)
+    let candidates: Vec<&str> = COMPILED_PKEXEC_PATH
+        .into_iter()
+        .filter(|path| !path.is_empty())
+        .chain(PKEXEC_CANDIDATES)
+        .collect();
+    trusted_program(&candidates)
 }
 
 fn trusted_program(candidates: &[&str]) -> Result<PathBuf> {

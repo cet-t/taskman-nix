@@ -94,7 +94,7 @@ fn parse_ipv6(hex: &str) -> Option<Ipv6Addr> {
         return None;
     }
     let mut octets = [0u8; 16];
-    for (index, chunk) in hex.as_bytes().chunks_exact(8).enumerate() {
+    for (index, chunk) in hex.as_bytes().as_chunks::<8>().0.iter().enumerate() {
         let word = std::str::from_utf8(chunk).ok()?;
         octets[index * 4..index * 4 + 4]
             .copy_from_slice(&u32::from_str_radix(word, 16).ok()?.to_le_bytes());
@@ -185,15 +185,18 @@ fn parse_net_table<R: BufRead>(
                     continue;
                 };
                 let remote = SocketAddr::new(ip, port);
-                let remote = match remote_of(state, remote) {
+                match remote_of(state, remote) {
                     Some(remote) => Some(remote),
                     // Listeners and placeholder peers are the only TCP rows
                     // allowed to omit a peer. An established row with a
                     // malformed address must not masquerade as a listener.
-                    None if state == TcpState::Listen => None,
+                    None if state == TcpState::Listen
+                        || (remote.port() == 0 && remote.ip().is_unspecified()) =>
+                    {
+                        None
+                    }
                     None => continue,
-                };
-                remote
+                }
             }
             None => None,
         };

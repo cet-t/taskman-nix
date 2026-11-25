@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tm_core::error::{Result, TmError};
 
-const ENTRY_FILE_NAME: &str = "io.github.aufkrawall.Taskman.desktop";
+const ENTRY_FILE_NAME: &str = "io.github.cet_t.Taskman.desktop";
 const OWNED_MARKER: &str = "X-Taskman-Autostart=1";
 const MAX_ENTRY_BYTES: u64 = 64 * 1024;
 
@@ -31,12 +31,63 @@ pub fn set_enabled(enabled: bool) -> Result<()> {
     let home = config_home()
         .ok_or_else(|| TmError::platform("autostart", "no absolute XDG config home"))?;
     if enabled {
-        let executable = std::env::current_exe()
-            .map_err(|error| TmError::platform("autostart executable", error.to_string()))?;
+        let executable = resolve_autostart_executable()?;
         set_enabled_at(&home, &executable, true)
     } else {
         remove_owned_entry(&entry_path(&home))
     }
+}
+
+/// Choose the executable path written into `Exec=`.
+///
+/// On NixOS, `current_exe()` resolves to an immutable `/nix/store/<hash>-...`
+/// path (often `.taskman-wrapped` behind a wrapper script), which becomes stale
+/// after a system rebuild and garbage collection. Prefer an explicit
+/// `TASKMAN_AUTOSTART_EXEC` override, or — when running from `/nix/store/` — a
+/// stable Nix profile symlink such as `/run/current-system/sw/bin/taskman`.
+fn resolve_autostart_executable() -> Result<PathBuf> {
+    if let Some(explicit) = std::env::var_os("TASKMAN_AUTOSTART_EXEC")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.is_file())
+    {
+        return Ok(explicit);
+    }
+    let current = std::env::current_exe()
+        .map_err(|error| TmError::platform("autostart executable", error.to_string()))?;
+    Ok(prefer_stable_nix_executable(
+        &current,
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+        std::env::var("USER").ok().as_deref(),
+    ))
+}
+
+fn prefer_stable_nix_executable(
+    current: &Path,
+    home: Option<&Path>,
+    user: Option<&str>,
+) -> PathBuf {
+    if !current.starts_with("/nix/store") {
+        return current.to_path_buf();
+    }
+    let mut candidates = Vec::new();
+    if let Some(home) = home.filter(|path| path.is_absolute()) {
+        candidates.push(home.join(".nix-profile/bin/taskman"));
+    }
+    if let Some(user) = user.filter(|name| !name.is_empty() && !name.contains('/')) {
+        candidates.push(PathBuf::from(format!(
+            "/etc/profiles/per-user/{user}/bin/taskman"
+        )));
+    }
+    candidates.push(PathBuf::from("/run/current-system/sw/bin/taskman"));
+
+    candidates
+        .into_iter()
+        .find(|candidate| {
+            fs::metadata(candidate)
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        })
+        .unwrap_or_else(|| current.to_path_buf())
 }
 
 fn config_home() -> Option<PathBuf> {
@@ -511,5 +562,31 @@ mod tests {
 
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn non_nix_executable_is_preserved_unchanged() {
+        let current = Path::new("/opt/taskman/taskman");
+        assert_eq!(
+            prefer_stable_nix_executable(current, Some(Path::new("/home/alice")), Some("alice")),
+            current
+        );
+    }
+
+    #[test]
+    fn nix_store_executable_prefers_existing_stable_profile_wrapper() {
+        let home = test_config("nix-profile");
+        let wrapper = home.join(".nix-profile/bin/taskman");
+        fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+        fs::write(&wrapper, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let current =
+            Path::new("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-taskman/bin/.taskman-wrapped");
+        assert_eq!(
+            prefer_stable_nix_executable(current, Some(&home), Some("nobody")),
+            wrapper
+        );
+        let _ = fs::remove_dir_all(home);
     }
 }

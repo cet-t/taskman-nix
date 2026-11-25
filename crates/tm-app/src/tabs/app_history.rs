@@ -69,21 +69,10 @@ fn resolve_row_icon_path(
     {
         return Some(path.to_string());
     }
-    // On Linux a bare command name is a legitimate lookup key: `icon_or_default`
-    // resolves it through the `.desktop` index (Startup rows rely on this).
-    // On Windows/macOS a bare name is not an image path, and asking the shell
-    // for one yields the current directory's folder icon.
-    #[cfg(target_os = "linux")]
-    {
-        let key = key.trim();
-        if !key.is_empty() {
-            return Some(key.to_string());
-        }
-    }
     if std::path::Path::new(key).is_absolute() {
         return Some(key.to_string());
     }
-    latest_snap.and_then(|snap| {
+    if let Some(live) = latest_snap.and_then(|snap| {
         snap.processes.iter().find_map(|p| {
             if p.name.eq_ignore_ascii_case(key) || p.shown_name() == shown {
                 crate::icon_cache::row_icon_key(p.exe_path.as_deref())
@@ -91,7 +80,22 @@ fn resolve_row_icon_path(
                 None
             }
         })
-    })
+    }) {
+        return Some(live);
+    }
+    // On Linux a bare command name is a legitimate fallback lookup key when no
+    // stored or live executable path exists: `icon_or_default` resolves it
+    // through the `.desktop` index (Startup rows rely on this). On
+    // Windows/macOS a bare name is not an image path, and asking the shell for
+    // one yields the current directory's folder icon.
+    #[cfg(target_os = "linux")]
+    {
+        let key = key.trim();
+        if !key.is_empty() {
+            return Some(key.to_string());
+        }
+    }
+    None
 }
 
 /// egui temp-data key of the keyboard selection: the row OWNER (the display
@@ -517,7 +521,14 @@ mod tests {
             resolve_row_icon_path(&icons, "cmd.exe", "cmd.exe", Some(&snap)).as_deref(),
             Some(r"C:\Windows\System32\cmd.exe")
         );
-        // Bare name (not a path) for an app that is not running: nothing.
+        // Bare name (not a path) for an app that is not running: Linux keeps it
+        // as an XDG `.desktop` lookup key, whereas Windows/macOS return None.
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            resolve_row_icon_path(&icons, "clang-cl.exe", "clang-cl.exe", None).as_deref(),
+            Some("clang-cl.exe")
+        );
+        #[cfg(not(target_os = "linux"))]
         assert_eq!(
             resolve_row_icon_path(&icons, "clang-cl.exe", "clang-cl.exe", None),
             None

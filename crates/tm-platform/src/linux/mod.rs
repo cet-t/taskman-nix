@@ -730,8 +730,11 @@ fn parent_block_device(dev: &str) -> Option<String> {
 
 fn hostname() -> String {
     std::fs::read_to_string("/etc/hostname")
+        .or_else(|_| std::fs::read_to_string("/proc/sys/kernel/hostname"))
+        .ok()
         .map(|h| h.trim().to_string())
-        .unwrap_or_else(|_| std::env::var("HOSTNAME").unwrap_or_default())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| std::env::var("HOSTNAME").unwrap_or_default())
 }
 
 fn now_ms() -> u64 {

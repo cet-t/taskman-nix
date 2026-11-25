@@ -41,8 +41,7 @@ pub fn list_sessions() -> Result<Vec<UserSession>> {
     if !available() {
         return Err(TmError::Unsupported("user sessions (systemd/loginctl)"));
     }
-    let loginctl =
-        loginctl_path().ok_or_else(|| TmError::Unsupported("user sessions (loginctl path)"))?;
+    let loginctl = loginctl_path().ok_or(TmError::Unsupported("user sessions (loginctl path)"))?;
     let deadline = Instant::now() + LOGINCTL_DEADLINE;
     let output = run_loginctl(
         &loginctl,
@@ -279,19 +278,24 @@ fn logon_epoch_s(boot_epoch_s: Option<u64>, monotonic_us: Option<u64>) -> Option
     boot.checked_add(elapsed)
 }
 
-fn loginctl_path() -> Option<std::path::PathBuf> {
-    use std::os::unix::fs::MetadataExt;
-    use std::os::unix::fs::PermissionsExt;
+const COMPILED_LOGINCTL_PATH: Option<&str> = option_env!("TASKMAN_LOGINCTL_PATH");
+const LOGINCTL_CANDIDATES: [&str; 3] = [
+    "/run/current-system/sw/bin/loginctl",
+    "/usr/bin/loginctl",
+    "/bin/loginctl",
+];
 
-    ["/usr/bin/loginctl", "/bin/loginctl"]
+fn loginctl_path() -> Option<std::path::PathBuf> {
+    COMPILED_LOGINCTL_PATH
         .into_iter()
-        .map(std::path::PathBuf::from)
-        .find(|candidate| {
-            candidate.metadata().is_ok_and(|metadata| {
-                metadata.is_file()
-                    && metadata.uid() == 0
-                    && metadata.permissions().mode() & 0o111 != 0
-            })
+        .filter(|path| !path.is_empty())
+        .chain(LOGINCTL_CANDIDATES)
+        .find_map(|candidate| {
+            let candidate = Path::new(candidate);
+            candidate
+                .is_file()
+                .then(|| super::launch::trusted_system_program(candidate).ok())
+                .flatten()
         })
 }
 
